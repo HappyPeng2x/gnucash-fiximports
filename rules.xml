@@ -1,0 +1,11 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<rules>
+  <rule>
+    <transaction>ドコモ</transaction>
+    <account>生活費:携帯電話</account>
+  </rule>
+  <rule>
+    <transaction>セブン－イレブン</transaction>
+    <account>買物:コンビニ</account>
+  </rule>
+</rules>

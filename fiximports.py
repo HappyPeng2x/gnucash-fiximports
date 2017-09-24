@@ -43,6 +43,8 @@ import logging
 from datetime import date
 import re
 
+from lxml import etree
+
 # gnucash imports
 from gnucash import Session
 
@@ -51,7 +53,12 @@ def account_from_path(top_account, account_path, original_path=None):
     if original_path is None:
         original_path = account_path
     account, account_path = account_path[0], account_path[1:]
-    account = top_account.lookup_by_name(account)
+
+    if type(account)==unicode: # In case of rules in XML format, they will be in Unicode strings (not supported by the Gnucash API).
+        account = top_account.lookup_by_name(account.encode("utf8"))
+    else:
+        account = top_account.lookup_by_name(account)
+        
     if account.get_instance() is None:
         raise Exception(
             "path " + ''.join(original_path) + " could not be found")
@@ -61,31 +68,41 @@ def account_from_path(top_account, account_path, original_path=None):
         return account
 
 
-def readrules(filename):
+def readrules(filename, xml_format):
     '''Read the rules file.
     Populate an list with results. The list contents are:
     ([pattern], [account name]), ([pattern], [account name]) ...
     Note, this is in reverse order from the file.
     '''
     rules = []
-    with open(filename, 'r') as fd:
-        for line in fd:
-            line = line.strip()
-            if line and not line.startswith('#'):
-                result = re.match(r"^(\S+)\s+(.+)", line)
-                if result:
-                    ac = result.group(1)
-                    pattern = result.group(2)
-                    compiled = re.compile(pattern)  # Makesure RE is OK
-                    rules.append((compiled, ac))
-                else:
-                    logging.warn('Ignoring line: (incorrect format): "%s"', line)
+
+    if not xml_format:
+        with open(filename, 'r') as fd:
+            for line in fd:
+                line = line.strip()
+                if line and not line.startswith('#'):
+                    result = re.match(r"^(\S+)\s+(.+)", line)
+                    if result:
+                        ac = result.group(1)
+                        pattern = result.group(2)
+                        compiled = re.compile(pattern)  # Makesure RE is OK
+                        rules.append((compiled, ac))
+                    else:
+                        logging.warn('Ignoring line: (incorrect format): "%s"', line)                        
+    else: # Parse rules in XML format
+        with open(filename, 'r') as fd:
+            tree = etree.parse(fd)
+            rs = tree.xpath("/rules/rule")
+            
+            for r in rs:
+                rules.append((re.compile(r.xpath("transaction")[0].text), r.xpath("account")[0].text))
+            # In that case rules data will be in Unicode strings (not directly supported by the Gnucash API).
+        
     return rules
 
-
-def get_ac_from_str(str, rules, root_ac):
+def get_ac_from_str(str, rules, root_ac):    
     for pattern, acpath in rules:
-        if pattern.search(str):
+        if pattern.search(str.decode("utf8")):
             acplist = re.split(':', acpath)
             logging.debug('"%s" matches pattern "%s"', str, pattern.pattern)
             newac = account_from_path(root_ac, acplist)
@@ -110,6 +127,8 @@ def parse_cmdline():
                         help="Suppress normal output (except errors).")
     parser.add_argument('-n', '--nochange', action='store_true',
                         help="Do not modify gnucash file. No effect if using SQL.")
+    parser.add_argument('-x', '--xml', action='store_true',
+                        help="Use XML format for rules file.")
     parser.add_argument(
         "ac2fix", help="Full path of account to fix, e.g. Liabilities:CreditCard")
     parser.add_argument("rulesfile", help="Rules file. See doc for format.")
@@ -143,7 +162,8 @@ def main():
         loglevel = logging.INFO
     logging.basicConfig(level=loglevel)
 
-    rules = readrules(args.rulesfile)
+    rules = readrules(args.rulesfile, args.xml)
+    
     account_path = re.split(':', args.ac2fix)
 
     gnucash_session = Session(args.gnucash_file, is_new=False)
@@ -153,7 +173,7 @@ def main():
     try:
         root_account = gnucash_session.book.get_root_account()
         orig_account = account_from_path(root_account, account_path)
-
+        
         imbalance_pattern = re.compile(args.imbalance_ac)
 
         for split in orig_account.GetSplitList():
@@ -167,7 +187,7 @@ def main():
                 ac = split.GetAccount()
                 acname = ac.GetName()
                 logging.debug('%s: %s => %s', trans_date, trans_desc, acname)
-                if imbalance_pattern.match(acname):
+                if imbalance_pattern.match(acname):                    
                     imbalance += 1
                     search_str = trans_desc
                     if args.use_memo:
